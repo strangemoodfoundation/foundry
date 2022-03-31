@@ -4,7 +4,6 @@ use ethers::{
     prelude::ArtifactId,
     types::Chain,
 };
-use eyre::Result;
 use foundry_utils::RuntimeOrHandle;
 use futures::{
     channel::mpsc::{channel, Receiver, Sender},
@@ -179,36 +178,42 @@ impl Future for EtherscanHandler {
 }
 
 pub struct EtherscanIdentifier {
-    backend: Sender<HandlerRequest>,
+    backend: Option<Sender<HandlerRequest>>,
 }
 
 impl EtherscanIdentifier {
-    // TODO: Take API key
-    pub fn new(chain: Chain) -> Result<Self> {
-        let (backend, backend_rx) = channel(1);
-        let handler = EtherscanHandler::new(etherscan::Client::new_from_env(chain)?, backend_rx);
+    // TODO: Docs
+    pub fn new(chain: Chain, etherscan_api_key: String) -> Self {
+        if let Ok(client) = etherscan::Client::new(chain, etherscan_api_key) {
+            let (backend, backend_rx) = channel(1);
+            let handler = EtherscanHandler::new(client, backend_rx);
 
-        let rt = RuntimeOrHandle::new();
-        std::thread::spawn(move || match rt {
-            RuntimeOrHandle::Runtime(runtime) => runtime.block_on(handler),
-            RuntimeOrHandle::Handle(handle) => handle.block_on(handler),
-        });
+            let rt = RuntimeOrHandle::new();
+            std::thread::spawn(move || match rt {
+                RuntimeOrHandle::Runtime(runtime) => runtime.block_on(handler),
+                RuntimeOrHandle::Handle(handle) => handle.block_on(handler),
+            });
 
-        Ok(Self { backend })
+            Self { backend: Some(backend) }
+        } else {
+            Self { backend: None }
+        }
     }
 }
 
 impl TraceIdentifier for EtherscanIdentifier {
-    // TODO: Make this a no-op if we didn't set up a client
+    // TODO: Identify many at the same time
     fn identify_address(
         &self,
         addr: &Address,
         _: Option<&Vec<u8>>,
     ) -> (Option<String>, Option<String>, Option<Cow<Abi>>) {
-        let (sender, rx) = oneshot_channel();
-        if self.backend.clone().try_send((*addr, sender)).is_ok() {
-            if let Ok(Some((label, abi))) = rx.recv() {
-                return (None, Some(label), Some(Cow::Owned(abi)))
+        if let Some(backend) = &self.backend {
+            let (sender, rx) = oneshot_channel();
+            if backend.clone().try_send((*addr, sender)).is_ok() {
+                if let Ok(Some((label, abi))) = rx.recv() {
+                    return (None, Some(label), Some(Cow::Owned(abi)))
+                }
             }
         }
         (None, None, None)

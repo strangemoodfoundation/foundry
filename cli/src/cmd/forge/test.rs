@@ -9,11 +9,15 @@ use crate::{
 };
 use ansi_term::Colour;
 use clap::{AppSettings, Parser};
+use ethers::prelude::Chain;
 use forge::{
     decode::decode_console_logs,
     executor::opts::EvmOpts,
     gas_report::GasReport,
-    trace::{identifier::LocalTraceIdentifier, CallTraceDecoder, TraceKind},
+    trace::{
+        identifier::{EtherscanIdentifier, LocalTraceIdentifier},
+        CallTraceDecoder, TraceKind,
+    },
     MultiContractRunner, MultiContractRunnerBuilder, SuiteResult, TestFilter, TestKind,
 };
 use foundry_config::{figment::Figment, Config};
@@ -411,6 +415,8 @@ fn test(
         Ok(TestOutcome::new(results, allow_failure))
     } else {
         let local_identifier = LocalTraceIdentifier::new(&runner.known_contracts);
+        // TODO: Pull chain from provider, pull API key from config
+        let etherscan_identifier = EtherscanIdentifier::new(Chain::Mainnet, "".into());
         let (tx, rx) = channel::<(String, SuiteResult)>();
 
         let handle =
@@ -450,6 +456,7 @@ fn test(
                     let mut decoded_traces = Vec::new();
                     for (kind, trace) in &mut result.traces {
                         decoder.identify(trace, &local_identifier);
+                        decoder.identify(trace, &etherscan_identifier);
 
                         let should_include = match kind {
                             // At verbosity level 3, we only display traces for failed tests
