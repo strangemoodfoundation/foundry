@@ -60,6 +60,16 @@ impl CallTraceArena {
         }
     }
 
+    pub fn unlabeled_addresses_iter(&self) -> impl Iterator<Item = Address> + '_ {
+        self.arena.iter().flat_map(|node| {
+            if let RawOrDecodedReturnData::Raw(_) = &node.trace.output {
+                Some(node.trace.address)
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn addresses_iter(&self) -> impl Iterator<Item = (&Address, Option<&Vec<u8>>)> {
         self.arena.iter().map(|node| {
             let code = if node.trace.created() {

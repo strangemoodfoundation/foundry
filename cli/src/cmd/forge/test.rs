@@ -415,8 +415,6 @@ fn test(
         Ok(TestOutcome::new(results, allow_failure))
     } else {
         let local_identifier = LocalTraceIdentifier::new(&runner.known_contracts);
-        // TODO: Pull chain from provider, pull API key from config
-        let etherscan_identifier = EtherscanIdentifier::new(Chain::Mainnet, "".into());
         let (tx, rx) = channel::<(String, SuiteResult)>();
 
         let handle =
@@ -452,12 +450,51 @@ fn test(
                     let mut decoder =
                         CallTraceDecoder::new_with_labels(result.labeled_addresses.clone());
 
+                    // decode using the local ABIs first
+                    result.traces.iter_mut().for_each(|(_, trace)| {
+                        decoder.identify(trace, &local_identifier);
+                        decoder.decode(trace);
+                    });
+
+                    // get all the etherscan abis for anything unlabeled
+                    // TODO: Pull chain from provider, pull API key from config
+                    let mut etherscan = EtherscanIdentifier::new(
+                        Chain::Mainnet,
+                        "I5BXNZYP5GEDWFINGVEZKYIVU2695NPQZB".into(),
+                    )?;
+                    let mut addresses = result
+                        .traces
+                        .iter()
+                        .flat_map(|(_, trace)| trace.unlabeled_addresses_iter())
+                        .collect::<Vec<_>>();
+                    // do not double check addresses
+                    addresses.sort_unstable();
+                    addresses.dedup();
+
+                    let futs = addresses
+                        .into_iter()
+                        .map(|address| {
+                            let etherscan = etherscan.clone();
+                            async move {
+                                if let Ok(Some((label, abi))) = etherscan.identify(address).await {
+                                    Some((address, label, abi))
+                                } else {
+                                    None
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let identified = crate::utils::block_on(futures::future::join_all(futs));
+                    etherscan.set_identified(identified);
+
+                    result.traces.iter_mut().for_each(|(_, trace)| {
+                        decoder.identify(trace, &etherscan);
+                        decoder.decode(trace);
+                    });
+
                     // Decode the traces
                     let mut decoded_traces = Vec::new();
                     for (kind, trace) in &mut result.traces {
-                        decoder.identify(trace, &local_identifier);
-                        decoder.identify(trace, &etherscan_identifier);
-
                         let should_include = match kind {
                             // At verbosity level 3, we only display traces for failed tests
                             // At verbosity level 4, we also display the setup trace for failed
@@ -471,12 +508,6 @@ fn test(
                             }
                             _ => false,
                         };
-
-                        // We decode the trace if we either need to build a gas report or we need
-                        // to print it
-                        if should_include || gas_reporting {
-                            decoder.decode(trace);
-                        }
 
                         if should_include {
                             decoded_traces.push(trace.to_string());
